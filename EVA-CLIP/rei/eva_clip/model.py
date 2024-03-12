@@ -278,10 +278,17 @@ class CustomCLIP(nn.Module):
             itm_task: bool = False,
     ):
         super().__init__()
+        self.vision_cfg=vision_cfg
+        self.embed_dim=embed_dim
+        self.quick_gelu = quick_gelu
+        self.cast_dtype = cast_dtype
         self.visual = _build_vision_tower(embed_dim, vision_cfg, quick_gelu, cast_dtype)
         self.text = _build_text_tower(embed_dim, text_cfg, quick_gelu, cast_dtype)
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
+    def rebuild_vision_tower(self):
+        self.visual = _build_vision_tower(self.embed_dim, self.vision_cfg, self.quick_gelu, self.cast_dtype)
+        
     def lock_image_tower(self, unlocked_groups=0, freeze_bn_stats=False):
         # lock image tower as per LiT - https://arxiv.org/abs/2111.07991
         self.visual.lock(unlocked_groups=unlocked_groups, freeze_bn_stats=freeze_bn_stats)
@@ -298,8 +305,8 @@ class CustomCLIP(nn.Module):
     def no_weight_decay(self):
         return {'logit_scale'}
 
-    def encode_image(self, image, normalize: bool = False):
-        features = self.visual(image)
+    def encode_image(self, image, normalize: bool = False, out_layers=None):
+        features = self.visual(image, out_layers=out_layers)
         return F.normalize(features, dim=-1) if normalize else features
 
     def encode_text(self, text, normalize: bool = False):

@@ -508,13 +508,19 @@ class Transformer(nn.Module):
     def get_cast_dtype(self) -> torch.dtype:
         return self.resblocks[0].mlp.c_fc.weight.dtype
 
-    def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None):
-        for r in self.resblocks:
+    def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None, out_layers=None):
+        outs=[]
+        for out_idx, r in enumerate(self.resblocks):
             if self.grad_checkpointing and not torch.jit.is_scripting():
                 x = checkpoint(r, x, attn_mask)
             else:
                 x = r(x, attn_mask=attn_mask)
-        return x
+                if out_layers and (out_idx + 1) in out_layers:
+                    outs.append(x)
+        if out_layers:
+            return outs
+        else:
+            return x
 
 
 class VisionTransformer(nn.Module):
@@ -608,7 +614,7 @@ class VisionTransformer(nn.Module):
     def no_weight_decay(self):
         return {'positional_embedding', 'class_embedding'}
 
-    def forward(self, x: torch.Tensor, return_all_features: bool=False):
+    def forward(self, x: torch.Tensor, return_all_features: bool=False, out_layers=None):
         x = self.conv1(x)  # shape = [*, width, grid, grid]
         x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
         x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
@@ -622,10 +628,15 @@ class VisionTransformer(nn.Module):
         x = self.ln_pre(x)
 
         x = x.permute(1, 0, 2)  # NLD -> LND
-        x = self.transformer(x)
-        x = x.permute(1, 0, 2)  # LND -> NLD
+        x = self.transformer(x, out_layers=out_layers)
+        if out_layers:
+            patch_tokens=[p.permute(1,0,2) for p in x]
+        else:
+            x = x.permute(1, 0, 2)  # LND -> NLD
 
         if not return_all_features:
+            if out_layers:
+                x = patch_tokens[-1]
             if self.global_average_pool:
                 x = x.mean(dim=1) #x = x[:,1:,:].mean(dim=1)
             else:
@@ -636,7 +647,10 @@ class VisionTransformer(nn.Module):
             if self.proj is not None:
                 x = x @ self.proj
 
-        return x
+        if out_layers:
+            return patch_tokens, x
+        else:
+            return x
 
 
 class TextTransformer(nn.Module):

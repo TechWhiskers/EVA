@@ -486,7 +486,7 @@ class EVAVisionTransformer(nn.Module):
         self.num_classes = num_classes
         self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
-    def forward_features(self, x, return_all_features=False):
+    def forward_features(self, x, return_all_features=False, out_layers=None):
         
         x = self.patch_embed(x)
         batch_size, seq_len, _ = x.size()
@@ -509,23 +509,42 @@ class EVAVisionTransformer(nn.Module):
             x = self.patch_dropout(x)
 
         rel_pos_bias = self.rel_pos_bias() if self.rel_pos_bias is not None else None
-        for blk in self.blocks:
+        outs=[]
+        for blk_idx, blk in enumerate(self.blocks, 1):
             if self.grad_checkpointing:
                 x = checkpoint(blk, x, (rel_pos_bias,))
             else:
                 x = blk(x, rel_pos_bias=rel_pos_bias)
+            if out_layers and blk_idx in out_layers:
+                outs.append(x)
+                
 
         if not return_all_features:
             x = self.norm(x)
             if self.fc_norm is not None:
-                return self.fc_norm(x.mean(1))
+                if out_layers:
+                    return self.fc_norm(x.mean(1)), outs
+                else:
+                    return self.fc_norm(x.mean(1))
             else:
-                return x[:, 0]
-        return x
+                if out_layers:
+                    return x[:, 0], outs
+                else:
+                    return x[:, 0]
+        if out_layers:
+            return x, outs
+        else:
+            return x
 
-    def forward(self, x, return_all_features=False):
+    def forward(self, x, return_all_features=False, out_layers=None):
         if return_all_features:
-            return self.forward_features(x, return_all_features)
-        x = self.forward_features(x)
+            return self.forward_features(x, return_all_features, out_layers)
+        if out_layers:
+            x, patch_tokens = self.forward_features(x, return_all_features, out_layers)
+        else:
+            x = self.forward_features(x)
         x = self.head(x)
-        return x
+        if out_layers:
+            return x, patch_tokens
+        else:
+            return x
